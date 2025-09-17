@@ -138,11 +138,11 @@ in
   };
 
   # Optional: system TCP keepalive tuning (helps behind NATs)
-  networking.sysctl = {
-    "net.ipv4.tcp_keepalive_time" = 60;
-    "net.ipv4.tcp_keepalive_intvl" = 15;
-    "net.ipv4.tcp_keepalive_probes" = 4;
-  };
+boot.kernel.sysctl = {
+  "net.ipv4.tcp_keepalive_time" = 60;
+  "net.ipv4.tcp_keepalive_intvl" = 8;
+  "net.ipv4.tcp_keepalive_probes" = 4;
+};
 
   # Autostart the client as systemd --user
   systemd.user.services.kiosk-client = {
