@@ -1,12 +1,13 @@
 { config, pkgs, lib, ... }:
 
 let
-  serverIP = "192.168.1.171"; # <- set your PC's IP here
+  # Set the server IP your kiosk should connect to
+  serverIP = "192.168.1.171";
 
-  pythonEnv = pkgs.python3.withPackages (ps: with ps; [
-    tkinter
-  ]);
+  # Python environment with Tkinter
+  pythonEnv = pkgs.python3.withPackages (ps: with ps; [ tkinter ]);
 
+  # Your Python kiosk client stored in the Nix store
   kioskClient = pkgs.writeText "kiosk_client.py" ''
     #!/usr/bin/env python3
     import socket, json, tkinter as tk, threading, time
@@ -90,151 +91,79 @@ let
     if __name__ == "__main__":
         Kiosk().run()
   '';
-
-  runSession = pkgs.writeShellScript "run_kiosk_session.sh" ''
-    #!${pkgs.bash}/bin/bash
-    export DISPLAY=:0
-    ${pkgs.xorg.xset}/bin/xset -display :0 -dpms || true
-    ${pkgs.xorg.xset}/bin/xset -display :0 s off || true
-    ${pkgs.xorg.xset}/bin/xset -display :0 s noblank || true
-    exec ${pythonEnv}/bin/python3 ${kioskClient}
-  '';
-
-startX = pkgs.writeShellScript "start_kiosk.sh" ''
-  #!${pkgs.bash}/bin/bash
-  set -ex
-
-  COREUTILS=${pkgs.coreutils}/bin
-  XORG=${pkgs.xorg.xorgserver}/bin
-  XSET=${pkgs.xorg.xset}/bin
-  XTERM=${pkgs.xterm}/bin/xterm   # <-- define shell var here
-
-  echo "[kiosk] start_kiosk running from: $0"
-
-  export HOME=/var/lib/kiosk
-  export XDG_RUNTIME_DIR=/run/kiosk
-  "$COREUTILS"/mkdir -p "$HOME"
-  "$COREUTILS"/chown kiosk:kiosk "$HOME"
-  "$COREUTILS"/mkdir -p "$XDG_RUNTIME_DIR"
-  "$COREUTILS"/chown root:root "$XDG_RUNTIME_DIR"
-  "$COREUTILS"/chmod 700 "$XDG_RUNTIME_DIR"
-
-  "$COREUTILS"/mkdir -p /etc/X11/xorg.conf.d
-  cat >/etc/X11/xorg.conf.d/10-modesetting.conf <<'EOF'
-  Section "Device"
-    Identifier "Modeset"
-    Driver "modesetting"
-  EndSection
-  Section "Screen"
-    Identifier "Screen0"
-    Device "Modeset"
-    DefaultDepth 24
-    SubSection "Display"
-      Depth 24
-      Modes "1024x768"
-    EndSubSection
-  EndSection
-  Section "ServerFlags"
-    Option "AutoAddGPU" "false"
-  EndSection
-  EOF
-
-  "$XORG"/Xorg :0 -nolisten tcp -config /etc/X11/xorg.conf.d/10-modesetting.conf &
-
-  for i in $(seq 1 120); do
-    [ -S /tmp/.X11-unix/X0 ] && break
-    sleep 0.25
-  done
-
-  if ! pgrep -x Xorg >/dev/null 2>&1; then
-    echo "[kiosk] Xorg is not running; see /var/log/Xorg.0.log"
-    exit 1
-  fi
-
-  "$XSET"/xset -display :0 -dpms || true
-  "$XSET"/xset -display :0 s off || true
-  "$XSET"/xset -display :0 s noblank || true
-
-  echo "[kiosk] launching xterm"
-  /usr/bin/env "$XTERM" -display :0 -geometry 80x24+10+10 \
-    -e ${pkgs.bash}/bin/bash -c 'echo "Kiosk X up"; sleep 10' &
-
-  exec sudo -u kiosk ${pythonEnv}/bin/python3 ${kioskClient}
-'';
 in
 {
-  # Basic networking (DHCP)
+  ############################
+  # Base system/network bits #
+  ############################
   networking.useDHCP = lib.mkDefault true;
+  time.timeZone = "UTC";
+  nixpkgs.config.allowUnfree = true;
 
-  # Explicitly create the 'kiosk' group
-  users.groups.kiosk = {};
-
-  # Kiosk user
+  ######################
+  # Kiosk user account #
+  ######################
   users.users.kiosk = {
     isNormalUser = true;
-    description = "Kiosk user";
-    home = "/var/lib/kiosk";
     createHome = true;
+    home = "/home/kiosk";
     extraGroups = [ "video" "input" ];
-    group = "kiosk";        # primary group
-    hashedPassword = null;  # no password / not intended for login
   };
 
-  # Packages required
-  environment.systemPackages = with pkgs; [
-    pythonEnv
-    xorg.xorgserver
-    xorg.xset
-    xterm
-    sudo
-  ];
-
-  # Passwordless sudo so the service can drop to 'kiosk'
-  security.sudo = {
+  ##############################
+  # Desktop and display manager #
+  ##############################
+  services.xserver = {
     enable = true;
-    extraRules = [{
-      groups = [ "wheel" ];
-      commands = [{ command = "ALL"; options = [ "NOPASSWD" ]; }];
-    }];
-    extraConfig = ''
-      kiosk ALL=(kiosk) NOPASSWD: ALL
-      root  ALL=(kiosk) NOPASSWD: ALL
-    '';
+
+    # LXQt desktop (lightweight)
+    desktopManager.lxqt.enable = true;
+
+    # LightDM for login + autologin
+    displayManager.lightdm.enable = true;
+    displayManager.autoLogin.enable = true;
+    displayManager.autoLogin.user = "kiosk";
+    displayManager.defaultSession = "lxqt";
   };
 
-  # Kiosk launcher service
-  systemd.services.kiosk = {
-    description = "Kiosk launcher (Xorg + Tk client)";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "network-online.target" "systemd-user-sessions.service" ];
-    wants  = [ "network-online.target" ];
+  # Optional: Turn off DPMS/blanking system‑wide for X
+  services.xserver.displayManager.sessionCommands = ''
+    ${pkgs.xorg.xset}/bin/xset -dpms
+    ${pkgs.xorg.xset}/bin/xset s off
+    ${pkgs.xorg.xset}/bin/xset s noblank
+  '';
+
+  ########################################
+  # Autostart the kiosk app for the user #
+  ########################################
+  # Use a systemd --user service so it restarts if it crashes.
+  systemd.user.services.kiosk-client = {
+    description = "Kiosk Tk client";
+    wantedBy = [ "default.target" ];
     serviceConfig = {
-      Type = "simple";
-      ExecStart = "${startX}";
+      ExecStart = "${pythonEnv}/bin/python3 ${kioskClient}";
       Restart = "always";
-      RestartSec = "3s";
-      User = "root";
-      # A volatile runtime dir for the service (root-owned)
-/* optional: */ RuntimeDirectory = "kiosk";
-      StandardOutput = "journal";
-      StandardError  = "journal";
-      ExecStopPost   = "${pkgs.coreutils}/bin/rm -f /tmp/.X0-lock || true";
+      RestartSec = 2;
+      # DISPLAY is set by the desktop session; this is a safe default
+      Environment = "DISPLAY=:0";
     };
   };
 
-  # Optional: auto-login to console (not required for kiosk to run)
-  services.getty.autologinUser = lib.mkDefault "root";
+  # No need to enable explicitly; wantedBy handles it at login.
+  # If you want to force-enable it for the kiosk user on boot too, uncomment:
+  # systemd.user.targets.default.wants = [ "kiosk-client.service" ];
 
-  # Boot loader & EFI support
+  #############################
+  # Packages available system #
+  #############################
+  environment.systemPackages = with pkgs; [
+    pythonEnv
+    xorg.xset
+  ];
+
+  ################################
+  # Bootloader (for installed OS) #
+  ################################
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
-
-  # No desktop environment; we start Xorg directly
-  services.xserver.enable = false;
-  services.displayManager.enable = false;
-
-  # Misc
-  nixpkgs.config.allowUnfree = true;
-  time.timeZone = "UTC";
-  networking.hostName = "kiosk-nixos";
 }
