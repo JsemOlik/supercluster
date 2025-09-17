@@ -107,7 +107,7 @@ startX = pkgs.writeShellScript "start_kiosk.sh" ''
   COREUTILS=${pkgs.coreutils}/bin
   XORG=${pkgs.xorg.xorgserver}/bin
   XSET=${pkgs.xorg.xset}/bin
-  XTERM=${pkgs.xterm}/bin/xterm
+  XTERM=${pkgs.xterm}/bin/xterm   # <-- define shell var here
 
   echo "[kiosk] start_kiosk running from: $0"
 
@@ -155,12 +155,10 @@ startX = pkgs.writeShellScript "start_kiosk.sh" ''
   "$XSET"/xset -display :0 s off || true
   "$XSET"/xset -display :0 s noblank || true
 
-  # DEBUG: keep X alive and prove display works (10 seconds)
-/usr/bin/env echo "[kiosk] launching xterm"
-/usr/bin/env "${XTERM}" -display :0 -geometry 80x24+10+10 \
-  -e ${pkgs.bash}/bin/bash -c 'echo "Kiosk X up"; sleep 10' &
+  echo "[kiosk] launching xterm"
+  /usr/bin/env "$XTERM" -display :0 -geometry 80x24+10+10 \
+    -e ${pkgs.bash}/bin/bash -c 'echo "Kiosk X up"; sleep 10' &
 
-  # Now launch your Tk app
   exec sudo -u kiosk ${pythonEnv}/bin/python3 ${kioskClient}
 '';
 in
