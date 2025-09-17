@@ -1,13 +1,9 @@
 { config, pkgs, lib, ... }:
 
 let
-  # Set the server IP your kiosk should connect to
   serverIP = "192.168.1.171";
-
-  # Python environment with Tkinter
   pythonEnv = pkgs.python3.withPackages (ps: with ps; [ tkinter ]);
 
-  # Your Python kiosk client stored in the Nix store
   kioskClient = pkgs.writeText "kiosk_client.py" ''
     #!/usr/bin/env python3
     import socket, json, tkinter as tk, threading, time
@@ -35,28 +31,44 @@ let
                 justify="center",
             )
             self.label.pack(expand=True, fill="both", padx=40, pady=40)
+
+            # socket keepalive at app level as a safety net
             self.sock = None
             threading.Thread(target=self.loop, daemon=True).start()
 
         def set_text(self, text, color="white"):
             self.root.after(0, lambda: self.label.config(text=text, fg=color))
 
+        def connect(self):
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(30)
+            # OS keepalive
+            try:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            except Exception:
+                pass
+            return s
+
         def loop(self):
-            attempt = 0
+            backoff = 5
             while True:
-                attempt += 1
                 try:
                     if self.sock:
-                        self.sock.close()
-                    self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    self.sock.settimeout(10)
-                    self.set_text(f"Connecting to {SERVER_IP}:{SERVER_PORT} (try {attempt})", "#FFAA00")
+                        try:
+                            self.sock.close()
+                        except Exception:
+                            pass
+
+                    self.sock = self.connect()
+                    self.set_text(f"Connecting to {SERVER_IP}:{SERVER_PORT} ...", "#FFAA00")
                     self.sock.connect((SERVER_IP, SERVER_PORT))
+                    backoff = 5
                     self.set_text("Connected! Waiting for messages...", "#00FF00")
                     self.recv()
                 except Exception as e:
-                    self.set_text(f"Failed: {e}\nRetrying in 5s...", "#FF4444")
-                    time.sleep(5)
+                    self.set_text(f"Failed: {e}\nRetrying in {backoff}s...", "#FF4444")
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 60)
 
         def recv(self):
             buf = ""
@@ -73,6 +85,9 @@ let
                             continue
                         try:
                             j = json.loads(ln)
+                            # ignore heartbeats
+                            if j.get("type") == "heartbeat":
+                                continue
                             msg = j.get("message", "").strip()
                             ts = j.get("timestamp", "")
                             if msg:
@@ -93,16 +108,12 @@ let
   '';
 in
 {
-  ############################
-  # Base system/network bits #
-  ############################
+  # Base system
   networking.useDHCP = lib.mkDefault true;
   time.timeZone = "UTC";
   nixpkgs.config.allowUnfree = true;
 
-  ######################
-  # Kiosk user account #
-  ######################
+  # Kiosk user
   users.users.kiosk = {
     isNormalUser = true;
     createHome = true;
@@ -110,33 +121,30 @@ in
     extraGroups = [ "video" "input" ];
   };
 
-  ##############################
-  # Desktop and display manager #
-  ##############################
+  # Desktop + DM
   services.xserver = {
     enable = true;
-
-    # LXQt desktop (lightweight)
     desktopManager.lxqt.enable = true;
-
-    # LightDM for login + autologin
     displayManager.lightdm.enable = true;
     displayManager.autoLogin.enable = true;
     displayManager.autoLogin.user = "kiosk";
     displayManager.defaultSession = "lxqt";
+    # Disable DPMS/screensaver at session start
+    displayManager.sessionCommands = ''
+      ${pkgs.xorg.xset}/bin/xset -dpms
+      ${pkgs.xorg.xset}/bin/xset s off
+      ${pkgs.xorg.xset}/bin/xset s noblank
+    '';
   };
 
-  # Optional: Turn off DPMS/blanking system‑wide for X
-  services.xserver.displayManager.sessionCommands = ''
-    ${pkgs.xorg.xset}/bin/xset -dpms
-    ${pkgs.xorg.xset}/bin/xset s off
-    ${pkgs.xorg.xset}/bin/xset s noblank
-  '';
+  # Optional: system TCP keepalive tuning (helps behind NATs)
+  networking.sysctl = {
+    "net.ipv4.tcp_keepalive_time" = 60;
+    "net.ipv4.tcp_keepalive_intvl" = 15;
+    "net.ipv4.tcp_keepalive_probes" = 4;
+  };
 
-  ########################################
-  # Autostart the kiosk app for the user #
-  ########################################
-  # Use a systemd --user service so it restarts if it crashes.
+  # Autostart the client as systemd --user
   systemd.user.services.kiosk-client = {
     description = "Kiosk Tk client";
     wantedBy = [ "default.target" ];
@@ -144,26 +152,34 @@ in
       ExecStart = "${pythonEnv}/bin/python3 ${kioskClient}";
       Restart = "always";
       RestartSec = 2;
-      # DISPLAY is set by the desktop session; this is a safe default
       Environment = "DISPLAY=:0";
     };
   };
 
-  # No need to enable explicitly; wantedBy handles it at login.
-  # If you want to force-enable it for the kiosk user on boot too, uncomment:
-  # systemd.user.targets.default.wants = [ "kiosk-client.service" ];
+  # Optional: hide LXQt power/saver autostarts (prevent popups)
+  environment.etc."xdg/autostart/lxqt-powermanagement.desktop".text = ''
+    [Desktop Entry]
+    Type=Application
+    Name=Power Management
+    Exec=lxqt-powermanagement
+    OnlyShowIn=LXQt;
+    Hidden=true
+  '';
+  environment.etc."xdg/autostart/lxqt-screensaver.desktop".text = ''
+    [Desktop Entry]
+    Type=Application
+    Name=ScreenSaver
+    Exec=lxqt-screensaver
+    OnlyShowIn=LXQt;
+    Hidden=true
+  '';
 
-  #############################
-  # Packages available system #
-  #############################
   environment.systemPackages = with pkgs; [
     pythonEnv
     xorg.xset
   ];
 
-  ################################
-  # Bootloader (for installed OS) #
-  ################################
+  # Bootloader (if installing to disk)
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
 }
