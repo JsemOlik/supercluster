@@ -100,38 +100,58 @@ let
     exec ${pythonEnv}/bin/python3 ${kioskClient}
   '';
 
-  startX = pkgs.writeShellScript "start_kiosk.sh" ''
-    #!${pkgs.bash}/bin/bash
-    set -e
-    export HOME=/var/lib/kiosk
-    export XDG_RUNTIME_DIR=/run/kiosk
+  sstartX = pkgs.writeShellScript "start_kiosk.sh" ''
+  #!${pkgs.bash}/bin/bash
+  set -e
+  export HOME=/var/lib/kiosk
+  export XDG_RUNTIME_DIR=/run/kiosk
+  mkdir -p "$HOME"
+  chown kiosk:kiosk "$HOME"
+  mkdir -p "$XDG_RUNTIME_DIR"
+  chown root:root "$XDG_RUNTIME_DIR"
+  chmod 700 "$XDG_RUNTIME_DIR"
 
-    # Ensure dirs and ownership
-    mkdir -p "$HOME"
-    chown kiosk:kiosk "$HOME"
+  # Ensure dummy driver config exists
+  mkdir -p /etc/X11/xorg.conf.d
+  cat >/etc/X11/xorg.conf.d/10-dummy.conf <<'EOF'
+  Section "Device"
+    Identifier  "Dummy"
+    Driver      "dummy"
+    VideoRam    256000
+  EndSection
+  Section "Monitor"
+    Identifier "Monitor0"
+    HorizSync 28.0-80.0
+    VertRefresh 48.0-75.0
+  EndSection
+  Section "Screen"
+    Identifier "Screen0"
+    Device "Dummy"
+    Monitor "Monitor0"
+    DefaultDepth 24
+    SubSection "Display"
+      Depth 24
+      Modes "1024x768"
+    EndSubSection
+  EndSection
+  Section "ServerFlags"
+    Option "AutoAddGPU" "false"
+  EndSection
+  EOF
 
-    # root-owned runtime dir (no need for kiosk group here)
-    mkdir -p "$XDG_RUNTIME_DIR"
-    chown root:root "$XDG_RUNTIME_DIR"
-    chmod 700 "$XDG_RUNTIME_DIR"
+  ${pkgs.xorg.xorgserver}/bin/Xorg :0 -nolisten tcp -config /etc/X11/xorg.conf.d/10-dummy.conf &
 
-    # Start Xorg
-    ${pkgs.xorg.xorgserver}/bin/Xorg :0 -nolisten tcp vt7 &
+  for i in $(seq 1 40); do
+    [ -S /tmp/.X11-unix/X0 ] && break
+    sleep 0.25
+  done
 
-    # Wait for X socket
-    for i in $(seq 1 40); do
-      [ -S /tmp/.X11-unix/X0 ] && break
-      sleep 0.25
-    done
+  ${pkgs.xorg.xset}/bin/xset -display :0 -dpms || true
+  ${pkgs.xorg.xset}/bin/xset -display :0 s off || true
+  ${pkgs.xorg.xset}/bin/xset -display :0 s noblank || true
 
-    # Unblank / DPMS off (best effort)
-    ${pkgs.xorg.xset}/bin/xset -display :0 -dpms || true
-    ${pkgs.xorg.xset}/bin/xset -display :0 s off || true
-    ${pkgs.xorg.xset}/bin/xset -display :0 s noblank || true
-
-    # Run the Tk client as 'kiosk'
-    exec sudo -u kiosk ${pythonEnv}/bin/python3 ${kioskClient}
-  '';
+  exec sudo -u kiosk ${pythonEnv}/bin/python3 ${kioskClient}
+'';
 in
 {
   # Basic networking (DHCP)
