@@ -102,45 +102,62 @@ let
 
 startX = pkgs.writeShellScript "start_kiosk.sh" ''
   #!${pkgs.bash}/bin/bash
-  set -e
+  set -ex
   export HOME=/var/lib/kiosk
   export XDG_RUNTIME_DIR=/run/kiosk
   mkdir -p "$HOME"; chown kiosk:kiosk "$HOME"
   mkdir -p "$XDG_RUNTIME_DIR"; chown root:root "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
 
-  mkdir -p /etc/X11/xorg.conf.d
-  cat >/etc/X11/xorg.conf.d/10-modesetting.conf <<'EOF'
-  Section "Device"
-    Identifier "Modeset"
-    Driver "modesetting"
-  EndSection
+  echo "[kiosk] writing modesetting xorg.conf"
+/bin/mkdir -p /etc/X11/xorg.conf.d
+cat >/etc/X11/xorg.conf.d/10-modesetting.conf <<'EOF'
+Section "Device"
+  Identifier "Modeset"
+  Driver "modesetting"
+EndSection
 
-  Section "Screen"
-    Identifier "Screen0"
-    Device "Modeset"
-    DefaultDepth 24
-    SubSection "Display"
-      Depth 24
-      Modes "1024x768"
-    EndSubSection
-  EndSection
+Section "Screen"
+  Identifier "Screen0"
+  Device "Modeset"
+  DefaultDepth 24
+  SubSection "Display"
+    Depth 24
+    Modes "1024x768"
+  EndSubSection
+EndSection
 
-  Section "ServerFlags"
-    Option "AutoAddGPU" "false"
-  EndSection
-  EOF
+Section "ServerFlags"
+  Option "AutoAddGPU" "false"
+EndSection
+EOF
 
-  ${pkgs.xorg.xorgserver}/bin/Xorg :0 -nolisten tcp -config /etc/X11/xorg.conf.d/10-modesetting.conf &
+  echo "[kiosk] starting Xorg"
+/run/current-system/sw/bin/Xorg :0 -nolisten tcp -config /etc/X11/xorg.conf.d/10-modesetting.conf &
 
-  for i in $(seq 1 80); do
-    [ -S /tmp/.X11-unix/X0 ] && break
+  # wait longer for X socket, with logs
+  for i in $(seq 1 120); do
+    if [ -S /tmp/.X11-unix/X0 ]; then
+      echo "[kiosk] X socket ready"
+      break
+    fi
     sleep 0.25
   done
 
-  ${pkgs.xorg.xset}/bin/xset -display :0 -dpms || true
-  ${pkgs.xorg.xset}/bin/xset -display :0 s off || true
-  ${pkgs.xorg.xset}/bin/xset -display :0 s noblank || true
+  # if X already exited, bail with log
+  if ! pgrep -x Xorg >/dev/null 2>&1; then
+    echo "[kiosk] Xorg is not running; see /var/log/Xorg.0.log"
+    exit 1
+  fi
 
+  # Best-effort DPMS/blanking
+  /run/current-system/sw/bin/xset -display :0 -dpms s off s noblank || true
+
+  # DEBUG: start xterm so we see a visible client keep X alive
+  echo "[kiosk] starting xterm"
+/run/current-system/sw/bin/xterm -display :0 -geometry 80x24+10+10 -e /bin/sh -c 'echo Kiosk X up; sleep 3' &
+
+  # Now start the Tk app
+  echo "[kiosk] starting python client"
   exec sudo -u kiosk ${pythonEnv}/bin/python3 ${kioskClient}
 '';
 in
