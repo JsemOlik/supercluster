@@ -1,10 +1,12 @@
 { config, pkgs, lib, ... }:
 
 let
-  serverIP = "192.168.1.171";  # <- set your PC's IP here
+  serverIP = "192.168.1.171"; # <- set your PC's IP here
+
   pythonEnv = pkgs.python3.withPackages (ps: with ps; [
     tkinter
   ]);
+
   kioskClient = pkgs.writeText "kiosk_client.py" ''
     #!/usr/bin/env python3
     import socket, json, tkinter as tk, threading, time
@@ -91,55 +93,65 @@ let
 
   runSession = pkgs.writeShellScript "run_kiosk_session.sh" ''
     #!${pkgs.bash}/bin/bash
-    # Minimal Xorg session launching the Python Tk client
     export DISPLAY=:0
-    # Disable screen blanking/DPMS once X is up
-    ${pkgs.xorg.xset}/bin/xset -dpms || true
-    ${pkgs.xorg.xset}/bin/xset s off || true
-    ${pkgs.xorg.xset}/bin/xset s noblank || true
+    ${pkgs.xorg.xset}/bin/xset -display :0 -dpms || true
+    ${pkgs.xorg.xset}/bin/xset -display :0 s off || true
+    ${pkgs.xorg.xset}/bin/xset -display :0 s noblank || true
     exec ${pythonEnv}/bin/python3 ${kioskClient}
   '';
 
-startX = pkgs.writeShellScript "start_kiosk.sh" ''
-  #!${pkgs.bash}/bin/bash
-  set -e
-  export HOME=/var/lib/kiosk
-  export XDG_RUNTIME_DIR=/run/kiosk
-  mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
-  chown kiosk:kiosk "$HOME" "$XDG_RUNTIME_DIR"
+  startX = pkgs.writeShellScript "start_kiosk.sh" ''
+    #!${pkgs.bash}/bin/bash
+    set -e
+    export HOME=/var/lib/kiosk
+    export XDG_RUNTIME_DIR=/run/kiosk
 
-  ${pkgs.xorg.xorgserver}/bin/Xorg :0 -nolisten tcp vt7 &
+    # Ensure dirs and ownership
+    mkdir -p "$HOME"
+    chown kiosk:kiosk "$HOME"
 
-  for i in $(seq 1 40); do
-    [ -S /tmp/.X11-unix/X0 ] && break
-    sleep 0.25
-  done
+    # root-owned runtime dir (no need for kiosk group here)
+    mkdir -p "$XDG_RUNTIME_DIR"
+    chown root:root "$XDG_RUNTIME_DIR"
+    chmod 700 "$XDG_RUNTIME_DIR"
 
-  ${pkgs.xorg.xset}/bin/xset -display :0 -dpms || true
-  ${pkgs.xorg.xset}/bin/xset -display :0 s off || true
-  ${pkgs.xorg.xset}/bin/xset -display :0 s noblank || true
+    # Start Xorg
+    ${pkgs.xorg.xorgserver}/bin/Xorg :0 -nolisten tcp vt7 &
 
-  exec sudo -u kiosk ${pythonEnv}/bin/python3 ${kioskClient}
-'';
+    # Wait for X socket
+    for i in $(seq 1 40); do
+      [ -S /tmp/.X11-unix/X0 ] && break
+      sleep 0.25
+    done
+
+    # Unblank / DPMS off (best effort)
+    ${pkgs.xorg.xset}/bin/xset -display :0 -dpms || true
+    ${pkgs.xorg.xset}/bin/xset -display :0 s off || true
+    ${pkgs.xorg.xset}/bin/xset -display :0 s noblank || true
+
+    # Run the Tk client as 'kiosk'
+    exec sudo -u kiosk ${pythonEnv}/bin/python3 ${kioskClient}
+  '';
 in
 {
-  imports = [ ];
-
   # Basic networking (DHCP)
   networking.useDHCP = lib.mkDefault true;
 
-  # Create a dedicated user for the kiosk app
+  # Explicitly create the 'kiosk' group
+  users.groups.kiosk = {};
+
+  # Kiosk user
   users.users.kiosk = {
     isNormalUser = true;
     description = "Kiosk user";
     home = "/var/lib/kiosk";
     createHome = true;
     extraGroups = [ "video" "input" ];
-    # No password; not intended for shell login
-    hashedPassword = null;
+    group = "kiosk";        # primary group
+    hashedPassword = null;  # no password / not intended for login
   };
 
-  # Install dependencies (python + tk, xorg server, xset, sudo for switching user)
+  # Packages required
   environment.systemPackages = with pkgs; [
     pythonEnv
     xorg.xorgserver
@@ -147,7 +159,7 @@ in
     sudo
   ];
 
-  # Make sure sudo can run without password for the kiosk start script
+  # Passwordless sudo so the service can drop to 'kiosk'
   security.sudo = {
     enable = true;
     extraRules = [{
@@ -160,42 +172,39 @@ in
     '';
   };
 
-  # Start at boot: a systemd service that starts Xorg and runs the kiosk client
+  # Kiosk launcher service
   systemd.services.kiosk = {
     description = "Kiosk launcher (Xorg + Tk client)";
     wantedBy = [ "multi-user.target" ];
     after = [ "network-online.target" "systemd-user-sessions.service" ];
-    wants = [ "network-online.target" ];
+    wants  = [ "network-online.target" ];
     serviceConfig = {
       Type = "simple";
       ExecStart = "${startX}";
       Restart = "always";
       RestartSec = "3s";
-      User = "root";  # we start Xorg, then drop to 'kiosk' user for the app
+      User = "root";
+      # A volatile runtime dir for the service (root-owned)
+/* optional: */ RuntimeDirectory = "kiosk";
       StandardOutput = "journal";
-      StandardError = "journal";
-      # Ensure a clean X lock on restart
-      ExecStopPost = "${pkgs.coreutils}/bin/rm -f /tmp/.X0-lock || true";
+      StandardError  = "journal";
+      ExecStopPost   = "${pkgs.coreutils}/bin/rm -f /tmp/.X0-lock || true";
     };
   };
 
-  # Console: auto-login root (optional; not required since service starts anyway)
+  # Optional: auto-login to console (not required for kiosk to run)
   services.getty.autologinUser = lib.mkDefault "root";
 
-  # Boot loader & EFI support (for ISO/UEFI installs)
+  # Boot loader & EFI support
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
 
-  # Keep system lightweight: no desktop manager
+  # No desktop environment; we start Xorg directly
   services.xserver.enable = false;
   services.displayManager.enable = false;
 
-  # Allow unfree if needed in the future (e.g., VM drivers)
+  # Misc
   nixpkgs.config.allowUnfree = true;
-
-  # Timezone optional
   time.timeZone = "UTC";
-
-  # Optional: set hostname
   networking.hostName = "kiosk-nixos";
 }
