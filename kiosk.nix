@@ -100,21 +100,26 @@ let
     exec ${pythonEnv}/bin/python3 ${kioskClient}
   '';
 
-  startX = pkgs.writeShellScript "start_kiosk.sh" ''
+startX = pkgs.writeShellScript "start_kiosk.sh" ''
     #!${pkgs.bash}/bin/bash
+    set -e
     export HOME=/var/lib/kiosk
     export XDG_RUNTIME_DIR=/run/kiosk
     mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
-    chown kiosk:kiosk "$HOME" "$XDG_RUNTIME_DIR" || true
+    chown kiosk:kiosk "$HOME" "$XDG_RUNTIME_DIR"
 
-    # Start bare Xorg on vt7 and run the kiosk session as the kiosk user
-    exec ${pkgs.xorg.xorgserver}/bin/Xorg :0 -nolisten tcp vt7 &
-    # Give X a moment to be ready
-    for i in $(seq 1 20); do
-      if [ -S /tmp/.X11-unix/X0 ]; then break; fi
-      sleep 0.3
+    ${pkgs.xorg.xorgserver}/bin/Xorg :0 -nolisten tcp vt7 &
+
+    for i in $(seq 1 40); do
+      [ -S /tmp/.X11-unix/X0 ] && break
+      sleep 0.25
     done
-    exec sudo -u kiosk ${runSession}
+
+    ${pkgs.xorg.xset}/bin/xset -display :0 -dpms || true
+    ${pkgs.xorg.xset}/bin/xset -display :0 s off || true
+    ${pkgs.xorg.xset}/bin/xset -display :0 s noblank || true
+
+    exec sudo -u kiosk ${pythonEnv}/bin/python3 ${kioskClient}
   '';
 in
 {
