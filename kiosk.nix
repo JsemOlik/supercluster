@@ -184,6 +184,7 @@ in
     pythonEnv
     xorg.xorgserver
     xorg.xset
+    xterm
     sudo
   ];
 
