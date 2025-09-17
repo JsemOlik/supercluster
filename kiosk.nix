@@ -101,26 +101,26 @@ let
   '';
 
 startX = pkgs.writeShellScript "start_kiosk.sh" ''
-    #!${pkgs.bash}/bin/bash
-    set -e
-    export HOME=/var/lib/kiosk
-    export XDG_RUNTIME_DIR=/run/kiosk
-    mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
-    chown kiosk:kiosk "$HOME" "$XDG_RUNTIME_DIR"
+  #!${pkgs.bash}/bin/bash
+  set -e
+  export HOME=/var/lib/kiosk
+  export XDG_RUNTIME_DIR=/run/kiosk
+  mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
+  chown kiosk:kiosk "$HOME" "$XDG_RUNTIME_DIR"
 
-    ${pkgs.xorg.xorgserver}/bin/Xorg :0 -nolisten tcp vt7 &
+  ${pkgs.xorg.xorgserver}/bin/Xorg :0 -nolisten tcp vt7 &
 
-    for i in $(seq 1 40); do
-      [ -S /tmp/.X11-unix/X0 ] && break
-      sleep 0.25
-    done
+  for i in $(seq 1 40); do
+    [ -S /tmp/.X11-unix/X0 ] && break
+    sleep 0.25
+  done
 
-    ${pkgs.xorg.xset}/bin/xset -display :0 -dpms || true
-    ${pkgs.xorg.xset}/bin/xset -display :0 s off || true
-    ${pkgs.xorg.xset}/bin/xset -display :0 s noblank || true
+  ${pkgs.xorg.xset}/bin/xset -display :0 -dpms || true
+  ${pkgs.xorg.xset}/bin/xset -display :0 s off || true
+  ${pkgs.xorg.xset}/bin/xset -display :0 s noblank || true
 
-    exec sudo -u kiosk ${pythonEnv}/bin/python3 ${kioskClient}
-  '';
+  exec sudo -u kiosk ${pythonEnv}/bin/python3 ${kioskClient}
+'';
 in
 {
   imports = [ ];
