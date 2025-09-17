@@ -109,9 +109,10 @@ startX = pkgs.writeShellScript "start_kiosk.sh" ''
   XSET=${pkgs.xorg.xset}/bin
   XTERM=${pkgs.xterm}/bin/xterm
 
+  echo "[kiosk] start_kiosk running from: $0"
+
   export HOME=/var/lib/kiosk
   export XDG_RUNTIME_DIR=/run/kiosk
-
   "$COREUTILS"/mkdir -p "$HOME"
   "$COREUTILS"/chown kiosk:kiosk "$HOME"
   "$COREUTILS"/mkdir -p "$XDG_RUNTIME_DIR"
@@ -124,7 +125,6 @@ startX = pkgs.writeShellScript "start_kiosk.sh" ''
     Identifier "Modeset"
     Driver "modesetting"
   EndSection
-
   Section "Screen"
     Identifier "Screen0"
     Device "Modeset"
@@ -134,7 +134,6 @@ startX = pkgs.writeShellScript "start_kiosk.sh" ''
       Modes "1024x768"
     EndSubSection
   EndSection
-
   Section "ServerFlags"
     Option "AutoAddGPU" "false"
   EndSection
@@ -156,7 +155,6 @@ startX = pkgs.writeShellScript "start_kiosk.sh" ''
   "$XSET"/xset -display :0 s off || true
   "$XSET"/xset -display :0 s noblank || true
 
-  # DEBUG – keep X alive and prove the display works
   "$XTERM" -display :0 -geometry 80x24+10+10 -e ${pkgs.bash}/bin/bash -c 'echo Kiosk X up; sleep 2' &
 
   exec sudo -u kiosk ${pythonEnv}/bin/python3 ${kioskClient}
