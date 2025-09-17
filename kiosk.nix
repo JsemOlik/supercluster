@@ -100,7 +100,7 @@ let
     exec ${pythonEnv}/bin/python3 ${kioskClient}
   '';
 
-  sstartX = pkgs.writeShellScript "start_kiosk.sh" ''
+  startX = pkgs.writeShellScript "start_kiosk.sh" ''
   #!${pkgs.bash}/bin/bash
   set -e
   export HOME=/var/lib/kiosk
